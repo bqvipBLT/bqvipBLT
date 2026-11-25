@@ -10,16 +10,16 @@ permissions:
   pages: write
   id-token: write
 
+# Một lần deploy tại một thời điểm. Không huỷ lần đang chạy (cloudstack push liên tiếp
+# thì lần sau chờ lần trước xong), tránh site bị deploy dở.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Build + upload artifact ở job riêng (mẫu chuẩn của GitHub)
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,9 +27,30 @@ jobs:
           node-version: 22
       - run: npm install --no-package-lock
       - run: npm run build
+      # Chặn deploy bản build thiếu trang chủ / trang bài
+      - name: Kiểm tra dist có index.html
+        run: |
+          test -f dist/index.html || { echo "::error::dist/index.html không có"; exit 1; }
+          echo "Trang bài: $(find dist/blog -name index.html | wc -l)"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
+
+  # Deploy ở job sau, khi artifact đã đăng ký xong. Lỗi tạm thời của GitHub
+  # ("No artifacts named github-pages were found") thì chờ 30 giây rồi thử lại một lần.
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url || steps.retry.outputs.page_url }}
+    steps:
       - id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - if: steps.deployment.outcome == 'failure'
+        run: sleep 30
+      - id: retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
